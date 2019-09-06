@@ -16,7 +16,7 @@ use super::selection;
 use super::updater;
 use crate::contacts::GrinboxAddress;
 use crate::wallet::types::{
-	Context, InitTxArgs, NodeClient, Slate, TxLogEntryType, TxProof, WalletBackend,
+	Context, InitTxArgs, Slate, TxLogEntryType, TxProof, VersionedSlate, WalletBackend,
 };
 use crate::wallet::ErrorKind;
 use failure::Error;
@@ -24,6 +24,7 @@ use grin_keychain::{Identifier, Keychain};
 use grin_util::secp::key::PublicKey;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::static_secp_instance;
+use libwallet::NodeClient;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -560,7 +561,7 @@ pub fn verify_tx_proof(
 	// Check signature on the message and decrypt it
 	// The `destination` of the message is the sender of the tx
 	let (destination, slate) = tx_proof
-		.verify_extract(None)
+		.verify_extract::<VersionedSlate>(None)
 		.map_err(|_| ErrorKind::VerifyProof)?;
 
 	// Inputs owned by sender

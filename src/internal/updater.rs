@@ -14,8 +14,8 @@
 
 use super::keys;
 use crate::wallet::types::{
-	BlockFees, CbData, NodeClient, OutputCommitMapping, OutputData, OutputStatus, TxLogEntry,
-	TxLogEntryType, WalletBackend, WalletInfo,
+	BlockFees, CbData, OutputCommitMapping, OutputData, OutputStatus, TxLogEntry, TxLogEntryType,
+	WalletBackend, WalletInfo,
 };
 use failure::Error;
 use grin_core::consensus::reward;
@@ -26,6 +26,7 @@ use grin_core::libtx::reward;
 use grin_keychain::{Identifier, Keychain, SwitchCommitmentType};
 use grin_util::from_hex;
 use grin_util::secp::pedersen::Commitment;
+use libwallet::NodeClient;
 use std::collections::HashMap;
 use uuid::Uuid;
 

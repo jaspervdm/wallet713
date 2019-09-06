@@ -2,7 +2,7 @@ use regex::Regex;
 use std::fmt::{self, Debug, Display};
 use url::Url;
 
-use grin_core::global::is_mainnet;
+use grin_core::global::is_floonet;
 
 use crate::common::crypto::{
 	Base58, PublicKey, GRINBOX_ADDRESS_VERSION_MAINNET, GRINBOX_ADDRESS_VERSION_TESTNET,
@@ -18,11 +18,17 @@ pub const DEFAULT_GRINBOX_PORT: u16 = 443;
 #[cfg(windows)]
 pub const DEFAULT_GRINBOX_PORT: u16 = 80;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum AddressType {
 	Grinbox,
 	Keybase,
 	Http,
+}
+
+impl fmt::Display for AddressType {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:?}", self)
+	}
 }
 
 pub trait Address: Debug + Display {
@@ -33,7 +39,7 @@ pub trait Address: Debug + Display {
 	fn stripped(&self) -> String;
 }
 
-pub fn parse_address(address: &str) -> Result<Box<Address>> {
+pub fn parse_address(address: &str) -> Result<Box<dyn Address>> {
 	let re = Regex::new(ADDRESS_REGEX)?;
 	let captures = re.captures(address);
 	if captures.is_none() {
@@ -44,7 +50,7 @@ pub fn parse_address(address: &str) -> Result<Box<Address>> {
 
 	let captures = captures.unwrap();
 	let address_type = captures.name("address_type").unwrap().as_str().to_string();
-	let address: Box<Address> = match address_type.as_ref() {
+	let address: Box<dyn Address> = match address_type.as_ref() {
 		"keybase" => Box::new(KeybaseAddress::from_str(address)?),
 		"grinbox" => Box::new(GrinboxAddress::from_str(address)?),
 		"http" | "https" => Box::new(HttpAddress::from_str(address)?),
@@ -55,8 +61,8 @@ pub fn parse_address(address: &str) -> Result<Box<Address>> {
 
 pub trait AddressBookBackend {
 	fn get_contact(&self, name: &[u8]) -> Result<Option<Contact>>;
-	fn contacts(&self) -> Box<Iterator<Item = Contact>>;
-	fn batch<'a>(&'a self) -> Result<Box<AddressBookBatch + 'a>>;
+	fn contacts(&self) -> Box<dyn Iterator<Item = Contact>>;
+	fn batch<'a>(&'a self) -> Result<Box<dyn AddressBookBatch + 'a>>;
 }
 
 pub trait AddressBookBatch {
@@ -66,11 +72,11 @@ pub trait AddressBookBatch {
 }
 
 pub struct AddressBook {
-	backend: Box<AddressBookBackend + Send>,
+	backend: Box<dyn AddressBookBackend + Send>,
 }
 
 impl AddressBook {
-	pub fn new(backend: Box<AddressBookBackend + Send>) -> Result<Self> {
+	pub fn new(backend: Box<dyn AddressBookBackend + Send>) -> Result<Self> {
 		let address_book = Self { backend };
 		Ok(address_book)
 	}
@@ -106,7 +112,7 @@ impl AddressBook {
 		Ok(None)
 	}
 
-	pub fn contacts(&self) -> Box<Iterator<Item = Contact>> {
+	pub fn contacts(&self) -> Box<dyn Iterator<Item = Contact>> {
 		self.backend.contacts()
 	}
 }
@@ -118,7 +124,7 @@ pub struct Contact {
 }
 
 impl Contact {
-	pub fn new(name: &str, address: Box<Address>) -> Result<Self> {
+	pub fn new(name: &str, address: Box<dyn Address>) -> Result<Self> {
 		Ok(Self {
 			name: name.to_string(),
 			address: address.to_string(),
@@ -173,10 +179,10 @@ impl Display for KeybaseAddress {
 }
 
 pub fn version_bytes() -> Vec<u8> {
-	if is_mainnet() {
-		GRINBOX_ADDRESS_VERSION_MAINNET.to_vec()
-	} else {
+	if is_floonet() {
 		GRINBOX_ADDRESS_VERSION_TESTNET.to_vec()
+	} else {
+		GRINBOX_ADDRESS_VERSION_MAINNET.to_vec()
 	}
 }
 

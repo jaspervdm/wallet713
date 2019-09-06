@@ -49,6 +49,13 @@ pub enum SeedArgs {
 	Recover,
 }
 
+#[derive(Clone, Debug)]
+pub enum SwapArgs<'a> {
+	Sell(&'a str, &'a str),
+	Buy(u32),
+	Info(u32),
+}
+
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, ErrorKind> {
 	args.value_of(name)
 		.ok_or_else(|| ErrorKind::Argument(name.to_owned()))
@@ -193,4 +200,18 @@ pub fn seed_command(args: &ArgMatches) -> Result<SeedArgs, ErrorKind> {
 		}
 	};
 	Ok(seed_args)
+}
+
+pub fn swap_command<'a>(args: &'a ArgMatches) -> Result<SwapArgs<'a>, ErrorKind> {
+	let swap_args = match args.subcommand() {
+		("sell", Some(args)) => {
+			SwapArgs::Sell(required(args, "address")?, required(args, "redeem")?)
+		}
+		("buy", Some(args)) => SwapArgs::Buy(parse(required(args, "idx")?)?),
+		("info", Some(args)) => SwapArgs::Info(parse(required(args, "idx")?)?),
+		(_, _) => {
+			usage!(args);
+		}
+	};
+	Ok(swap_args)
 }

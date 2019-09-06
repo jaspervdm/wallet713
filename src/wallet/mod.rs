@@ -4,6 +4,7 @@ mod backend;
 mod container;
 pub mod error;
 mod seed;
+pub mod swap;
 pub mod types;
 
 pub use self::backend::Backend;

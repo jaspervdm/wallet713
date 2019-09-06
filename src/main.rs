@@ -12,6 +12,7 @@ extern crate gotham_derive;
 extern crate clap;
 extern crate ansi_term;
 extern crate blake2_rfc;
+extern crate byteorder;
 extern crate chrono;
 extern crate colored;
 extern crate digest;
@@ -49,6 +50,8 @@ extern crate grin_core;
 extern crate grin_keychain;
 extern crate grin_store;
 extern crate grin_util;
+extern crate grin_wallet_libwallet as libwallet;
+extern crate grinswap;
 
 use clap::{App, Arg, ArgMatches};
 use colored::*;
@@ -158,13 +161,17 @@ fn main() {
 		false => RuntimeMode::Cli,
 	};
 
-	let config: Wallet713Config = welcome(&matches, &runtime_mode).unwrap_or_else(|e| {
-		panic!(
-			"{}: could not read or create config! {}",
-			"ERROR".bright_red(),
-			e
-		);
-	});
+	let config = match welcome(&matches, &runtime_mode) {
+		Ok(c) => c,
+		Err(e) => {
+			println!(
+				"{} could not read or create config! {}",
+				"ERROR:".bright_red(),
+				e
+			);
+			return;
+		}
+	};
 
 	if runtime_mode == RuntimeMode::Daemon {
 		env_logger::init();
@@ -178,7 +185,13 @@ fn main() {
 	let address_book = AddressBook::new(Box::new(address_book_backend))
 		.expect("could not create an address book!");
 
-	let container = create_container(config, address_book).unwrap();
+	let container = match create_container(config, address_book) {
+		Ok(c) => c,
+		Err(e) => {
+			println!("{} could not read config! {}", "ERROR:".bright_red(), e);
+			return;
+		}
+	};
 
 	let cli = CLI::new(container);
 	cli.start();

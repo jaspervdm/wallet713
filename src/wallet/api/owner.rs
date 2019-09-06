@@ -16,11 +16,14 @@ use colored::Colorize;
 use failure::Error;
 use grin_core::core::hash::Hashed;
 use grin_core::core::{amount_to_hr_string, Transaction};
-use grin_core::ser::ser_vec;
+use grin_core::libtx::tx_fee;
+use grin_core::ser::{ser_vec, ProtocolVersion};
 use grin_keychain::Identifier;
 use grin_util::secp::key::PublicKey;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::{to_hex, ZeroingString};
+use grinswap::{Action, Currency, Message as SwapMessage, Swap, SwapApi};
+use libwallet::{NodeClient, NodeVersionInfo, TxWrapper};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use uuid::Uuid;
@@ -33,10 +36,10 @@ use crate::common::{Arc, Keychain, Mutex, MutexGuard};
 use crate::contacts::{parse_address, AddressType, Contact, GrinboxAddress};
 use crate::internal::*;
 use crate::wallet::adapter::{Adapter, GrinboxAdapter, HTTPAdapter, KeybaseAdapter};
+use crate::wallet::swap::{SwapIdentifier, SwapSummary};
 use crate::wallet::types::{
-	AcctPathMapping, InitTxArgs, NodeClient, NodeHeightResult, NodeVersionInfo,
-	OutputCommitMapping, Slate, SlateVersion, TxLogEntry, TxProof, TxWrapper, VersionedSlate,
-	WalletBackend, WalletInfo,
+	AcctPathMapping, InitTxArgs, NodeHeightResult, OutputCommitMapping, Slate, SlateVersion,
+	TxLogEntry, TxProof, VersionedSlate, WalletBackend, WalletInfo,
 };
 use crate::wallet::{Container, ErrorKind};
 
@@ -486,11 +489,11 @@ where
 	pub fn post_tx(&self, tx: &Transaction, fluff: bool) -> Result<(), Error> {
 		self.open_and_close(|c| {
 			let w = c.backend()?;
-			let tx_hex = to_hex(ser_vec(tx).unwrap());
+			let tx_hex = to_hex(ser_vec(tx, ProtocolVersion::local()).unwrap());
 			let res = w.w2n_client().post_tx(&TxWrapper { tx_hex }, fluff);
 			if let Err(e) = res {
 				error!("api: post_tx: failed with error: {}", e);
-				Err(e)
+				Err(e.into())
 			} else {
 				debug!(
 					"api: post_tx: successfully posted tx: {}, fluff? {}",
@@ -532,7 +535,7 @@ where
 		}
 		let slate_id = tx_entry
 			.tx_slate_id
-			.ok_or(ErrorKind::TransactionProofNotStored)?;
+			.ok_or(ErrorKind::TransactionNotStored)?;
 		let tx = {
 			let mut c = self.container.lock();
 			let w = c.backend()?;
@@ -626,28 +629,268 @@ where
 		}
 	}
 
+	pub fn retrieve_swap_offers(
+		&self,
+	) -> Result<Vec<(Uuid, u32, Option<String>, u64, u64, Currency)>, Error> {
+		let mut c = self.container.lock();
+		let w = c.backend()?;
+
+		let offers = w
+			.swap_offers()?
+			.map(|o| {
+				(
+					o.id,
+					o.idx,
+					o.address,
+					o.offer.primary_amount,
+					o.offer.secondary_amount,
+					o.offer.secondary_currency,
+				)
+			})
+			.collect();
+
+		Ok(offers)
+	}
+
+	pub fn retrieve_swaps(&self) -> Result<Vec<SwapSummary>, Error> {
+		let mut c = self.container.lock();
+		let w = c.backend()?;
+
+		let summaries = w.swap_summaries()?.collect();
+
+		Ok(summaries)
+	}
+
+	pub fn retrieve_swap(
+		&self,
+		ident: SwapIdentifier,
+		mut update: bool,
+	) -> Result<(Swap, Option<Action>), Error> {
+		self.swap_open_and_close(|c| {
+			let w = c.backend()?;
+			let id = w.convert_swap_id(ident)?;
+			let mut swap = w.get_swap(id)?.ok_or(ErrorKind::NotFound)?;
+			if swap.is_finalized() {
+				update = false;
+			}
+
+			let action = if update {
+				let context = w.get_swap_context(id)?;
+				let action = swap::update_swap(c, &mut swap, &context)?;
+
+				let mut batch = c.backend()?.batch()?;
+				batch.store_swap(&swap)?;
+				batch.commit()?;
+
+				Some(action)
+			} else {
+				None
+			};
+
+			Ok((swap, action))
+		})
+	}
+
+	pub fn create_swap_offer(
+		&self,
+		address: Option<String>,
+		primary_amount: u64,
+		secondary_amount: u64,
+		secondary_currency: Currency,
+		secondary_redeem_address: String,
+	) -> Result<(Uuid, u32, Action), Error> {
+		if let Some(a) = &address {
+			match parse_address(a.as_str())?.address_type() {
+				AddressType::Grinbox | AddressType::Http => {}
+				t => {
+					return Err(ErrorKind::GenericError(format!(
+						"{} method does not support swaps",
+						t
+					))
+					.into())
+				}
+			}
+		}
+
+		self.swap_open_and_close(|c| {
+			let needed = primary_amount + tx_fee(1, 2, 1, None);
+			let mut coins = swap::select_coins(c.backend()?, needed)?;
+			let inputs = coins.iter().map(|c| (c.key_id.clone(), c.value)).collect();
+
+			// Generate the appropriate amount of derivation paths
+			let key_count = c.swap_apis.context_key_count(secondary_currency, true)?;
+			let w = c.backend()?;
+			let mut keys = Vec::with_capacity(key_count);
+			for _ in 0..key_count {
+				keys.push(w.next_child()?);
+			}
+
+			let context =
+				c.swap_apis
+					.create_context(secondary_currency, true, Some(inputs), keys)?;
+			let (mut swap, _) = c.swap_apis.create_swap_offer(
+				&context,
+				address,
+				primary_amount,
+				secondary_amount,
+				secondary_currency,
+				secondary_redeem_address,
+			)?;
+			let id = swap.id;
+			let action = swap::update_swap(c, &mut swap, &context)?;
+
+			// Update db
+			let mut batch = c.backend()?.batch()?;
+			let idx = batch.next_swap_idx()?;
+			swap.idx = idx;
+			batch.store_swap_mapping(idx, swap.id)?;
+			batch.store_swap_context(id, &context)?;
+			for coin in &mut coins {
+				batch.lock_output(coin)?;
+			}
+			batch.store_swap(&swap)?;
+			batch.commit()?;
+
+			Ok((id, idx, action))
+		})
+	}
+
+	pub fn accept_swap_offer(
+		&self,
+		ident: SwapIdentifier,
+	) -> Result<(Uuid, u64, u64, Currency, Action), Error> {
+		self.swap_open_and_close(|c| {
+			let w = c.backend()?;
+			let id = w.convert_swap_id(ident)?;
+			let offer = w.get_swap_offer(id)?.ok_or(ErrorKind::NotFound)?;
+			let currency = offer.offer.secondary_currency;
+
+			// Generate the appropriate amount of derivation paths
+			let key_count = c.swap_apis.context_key_count(currency, false)?;
+			let w = c.backend()?;
+			let mut keys = Vec::with_capacity(key_count);
+			for _ in 0..key_count {
+				keys.push(w.next_child()?);
+			}
+
+			let context = c.swap_apis.create_context(currency, false, None, keys)?;
+			let idx = offer.idx;
+			let (mut swap, _) =
+				c.swap_apis
+					.accept_swap_offer(&context, offer.address.clone(), offer.into())?;
+			swap.idx = idx;
+			let action = swap::update_swap(c, &mut swap, &context)?;
+
+			// Update db
+			let mut batch = c.backend()?.batch()?;
+			batch.store_swap_context(id, &context)?;
+			batch.store_swap(&swap)?;
+			batch.delete_swap_offer(id)?;
+			batch.commit()?;
+
+			Ok((
+				id,
+				swap.primary_amount,
+				swap.secondary_amount,
+				swap.secondary_currency,
+				action,
+			))
+		})
+	}
+
+	pub fn check_swap(&self, ident: SwapIdentifier) -> Result<Action, Error> {
+		self.swap_open_and_close(|c| {
+			let w = c.backend()?;
+			let id = w.convert_swap_id(ident)?;
+			let context = w.get_swap_context(id)?;
+			let mut swap = w.get_swap(id)?.ok_or(ErrorKind::NotFound)?;
+			let action = swap::update_swap(c, &mut swap, &context)?;
+
+			let mut batch = c.backend()?.batch()?;
+			batch.store_swap(&swap)?;
+			batch.commit()?;
+
+			Ok(action)
+		})
+	}
+
+	pub fn swap_message(&self, id: Uuid) -> Result<SwapMessage, Error> {
+		self.swap_open_and_close(|c| {
+			let w = c.backend()?;
+			let context = w.get_swap_context(id)?;
+			let swap = w.get_swap(id)?.ok_or(ErrorKind::NotFound)?;
+			let message = c.swap_apis.message(&swap)?;
+
+			Ok(message)
+		})
+	}
+
+	pub fn swap_message_sent(&self, id: Uuid) -> Result<Action, Error> {
+		self.swap_open_and_close(|c| {
+			let w = c.backend()?;
+			let context = w.get_swap_context(id)?;
+			let mut swap = w.get_swap(id)?.ok_or(ErrorKind::NotFound)?;
+			c.swap_apis.message_sent(&mut swap, &context)?;
+			let action = swap::update_swap(c, &mut swap, &context)?;
+
+			let mut batch = c.backend()?.batch()?;
+			batch.store_swap(&swap)?;
+			batch.commit()?;
+
+			Ok(action)
+		})
+	}
+
 	/// Convenience function that opens and closes the wallet with the stored credentials
 	fn open_and_close<F, X>(&self, f: F) -> Result<X, Error>
 	where
 		F: FnOnce(&mut MutexGuard<Container<W, C, K>>) -> Result<X, Error>,
 	{
 		let mut c = self.container.lock();
-		{
-			let w = c.backend()?;
-			if !w.has_seed()? {
-				return Err(ErrorKind::NoSeed.into());
-			}
-			w.open_with_credentials()?;
+		let w = c.backend()?;
+		if !w.has_seed()? {
+			return Err(ErrorKind::NoSeed.into());
 		}
+		w.open_with_credentials()?;
+
+		// Execute operation
 		let res = f(&mut c);
-		{
-			// Always try to close wallet
-			// Operation still considered successful, even if closing failed
-			let w = c.backend();
-			if w.is_ok() {
-				let _ = w.unwrap().close();
-			}
+
+		// Always try to close wallet
+		// Operation still considered successful, even if closing failed
+		let w = c.backend();
+		if w.is_ok() {
+			let _ = w.unwrap().close();
 		}
+
+		res
+	}
+
+	/// Convenience function that opens and closes the wallet with the stored credentials
+	fn swap_open_and_close<F, X>(&self, f: F) -> Result<X, Error>
+	where
+		F: FnOnce(&mut MutexGuard<Container<W, C, K>>) -> Result<X, Error>,
+	{
+		let mut c = self.container.lock();
+		let w = c.backend()?;
+		if !w.has_seed()? {
+			return Err(ErrorKind::NoSeed.into());
+		}
+		w.open_with_credentials()?;
+		let keychain = w.keychain().clone();
+		c.swap_apis.set_keychain(Some(keychain));
+
+		// Execute operation
+		let res = f(&mut c);
+
+		// Always try to close wallet
+		// Operation still considered successful, even if closing failed
+		let w = c.backend();
+		if w.is_ok() {
+			let _ = w.unwrap().close();
+		}
+		c.swap_apis.set_keychain(None);
+
 		res
 	}
 }

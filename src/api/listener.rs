@@ -6,19 +6,23 @@ use crate::broker::{
 use crate::common::hasher::derive_address_key;
 use crate::common::{Arc, Keychain, Mutex, MutexGuard};
 use crate::contacts::{Address, GrinboxAddress, KeybaseAddress};
-use crate::wallet::types::{NodeClient, VersionedSlate, WalletBackend};
+use crate::wallet::types::{VersionedSlate, WalletBackend};
 use crate::wallet::Container;
 use failure::Error;
 use futures::sync::oneshot;
 use futures::Future;
 use grin_util::secp::key::PublicKey;
+use grinswap::Message as SwapMessage;
+use libwallet::NodeClient;
+use serde::Serialize;
 use std::fmt;
 use std::thread::{spawn, JoinHandle};
 
 pub trait Listener: Sync + Send + 'static {
 	fn interface(&self) -> ListenerInterface;
 	fn address(&self) -> String;
-	fn publish(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error>;
+	fn publish_slate(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error>;
+	fn publish_swap_message(&self, message: &SwapMessage, to: &String) -> Result<(), Error>;
 	fn stop(self: Box<Self>) -> Result<(), Error>;
 }
 
@@ -57,9 +61,14 @@ impl Listener for GrinboxListener {
 		self.address.stripped()
 	}
 
-	fn publish(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error> {
+	fn publish_slate(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error> {
 		let address = GrinboxAddress::from_str(to)?;
-		self.publisher.post_slate(slate, &address)
+		self.publisher.post(slate, &address)
+	}
+
+	fn publish_swap_message(&self, message: &SwapMessage, to: &String) -> Result<(), Error> {
+		let address = GrinboxAddress::from_str(to)?;
+		self.publisher.post(message, &address)
 	}
 
 	fn stop(self: Box<Self>) -> Result<(), Error> {
@@ -86,9 +95,14 @@ impl Listener for KeybaseListener {
 		self.address.clone()
 	}
 
-	fn publish(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error> {
+	fn publish_slate(&self, slate: &VersionedSlate, to: &String) -> Result<(), Error> {
 		let address = KeybaseAddress::from_str(to)?;
-		self.publisher.post_slate(slate, &address)
+		self.publisher.post(slate, &address)
+	}
+
+	fn publish_swap_message(&self, message: &SwapMessage, to: &String) -> Result<(), Error> {
+		let address = KeybaseAddress::from_str(to)?;
+		self.publisher.post(message, &address)
 	}
 
 	fn stop(self: Box<Self>) -> Result<(), Error> {
@@ -114,7 +128,11 @@ impl Listener for ForeignHttpListener {
 		self.address.clone()
 	}
 
-	fn publish(&self, _slate: &VersionedSlate, _to: &String) -> Result<(), Error> {
+	fn publish_slate(&self, _slate: &VersionedSlate, _to: &String) -> Result<(), Error> {
+		unimplemented!();
+	}
+
+	fn publish_swap_message(&self, _message: &SwapMessage, _to: &String) -> Result<(), Error> {
 		unimplemented!();
 	}
 
@@ -141,7 +159,11 @@ impl Listener for OwnerHttpListener {
 		self.address.clone()
 	}
 
-	fn publish(&self, _slate: &VersionedSlate, _to: &String) -> Result<(), Error> {
+	fn publish_slate(&self, _slate: &VersionedSlate, _to: &String) -> Result<(), Error> {
+		unimplemented!();
+	}
+
+	fn publish_swap_message(&self, _message: &SwapMessage, _to: &String) -> Result<(), Error> {
 		unimplemented!();
 	}
 

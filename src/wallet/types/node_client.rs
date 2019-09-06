@@ -12,70 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::TxWrapper;
 use crate::common::client;
-use crate::wallet::ErrorKind;
-use failure::Error;
 use futures::stream;
 use futures::Stream;
-use grin_api::{Output, OutputListing, OutputType, Tip};
+use grin_api::{LocatedTxKernel, Output, OutputListing, OutputType, Tip};
+use grin_core::core::TxKernel;
 use grin_util::secp::pedersen::{Commitment, RangeProof};
 use grin_util::to_hex;
+use libwallet::{Error, ErrorKind, NodeClient, NodeVersionInfo, TxWrapper};
+use semver::Version;
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
-
-/// Node version info
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct NodeVersionInfo {
-	/// Semver version string
-	pub node_version: String,
-	/// block header verson
-	pub block_header_version: u16,
-	/// Whether this version info was successfully verified from a node
-	pub verified: Option<bool>,
-}
-
-/// Encapsulate all wallet-node communication functions. No functions within libwallet
-/// should care about communication details
-pub trait NodeClient: Sync + Send + Clone + 'static {
-	/// Return the URL of the check node
-	fn node_url(&self) -> &str;
-
-	/// Set the node URL
-	fn set_node_url(&mut self, node_url: &str);
-
-	/// Return the node api secret
-	fn node_api_secret(&self) -> Option<String>;
-
-	/// Change the API secret
-	fn set_node_api_secret(&mut self, node_api_secret: Option<String>);
-
-	fn get_version_info(&mut self) -> Option<NodeVersionInfo>;
-
-	/// Posts a transaction to a grin node
-	fn post_tx(&self, tx: &TxWrapper, fluff: bool) -> Result<(), Error>;
-
-	/// retrieves the current tip from the specified grin node
-	fn get_chain_height(&self) -> Result<u64, Error>;
-
-	/// retrieve a list of outputs from the specified grin node
-	/// need "by_height" and "by_id" variants
-	fn get_outputs_from_node(
-		&self,
-		wallet_outputs: Vec<Commitment>,
-	) -> Result<HashMap<Commitment, (String, u64, u64)>, Error>;
-
-	/// Get a list of outputs from the node by traversing the UTXO
-	/// set in PMMR index order.
-	/// Returns
-	/// (last available output index, last insertion index retrieved,
-	/// outputs(commit, proof, is_coinbase, height, mmr_index))
-	fn get_outputs_by_pmmr_index(
-		&self,
-		start_height: u64,
-		max_outputs: u64,
-	) -> Result<(u64, u64, Vec<(Commitment, RangeProof, bool, u64, u64)>), Error>;
-}
 
 #[derive(Clone)]
 pub struct HTTPNodeClient {
@@ -265,5 +212,53 @@ impl NodeClient for HTTPNodeClient {
 				Err(ErrorKind::ClientCallback(report))?
 			}
 		}
+	}
+
+	/// Get a kernel and the height of the block it is included in. Returns
+	/// (tx_kernel, height, mmr_index)
+	fn get_kernel(
+		&mut self,
+		excess: &Commitment,
+		min_height: Option<u64>,
+		max_height: Option<u64>,
+	) -> Result<Option<(TxKernel, u64, u64)>, Error> {
+		let version = self
+			.get_version_info()
+			.ok_or(libwallet::ErrorKind::ClientCallback(
+				"Unable to get version".into(),
+			))?;
+		let version = Version::parse(&version.node_version)
+			.map_err(|_| libwallet::ErrorKind::ClientCallback("Unable to parse version".into()))?;
+		if version <= Version::new(2, 0, 0) {
+			return Err(libwallet::ErrorKind::ClientCallback(
+				"Kernel lookup not supported by node, please upgrade it".into(),
+			)
+			.into());
+		}
+
+		let mut query = String::new();
+		if let Some(h) = min_height {
+			query += &format!("min_height={}", h);
+		}
+		if let Some(h) = max_height {
+			if query.len() > 0 {
+				query += "&";
+			}
+			query += &format!("max_height={}", h);
+		}
+		if query.len() > 0 {
+			query.insert_str(0, "?");
+		}
+
+		let url = format!(
+			"{}/v1/chain/kernels/{}{}",
+			self.node_url(),
+			to_hex(excess.0.to_vec()),
+			query
+		);
+		let res: Option<LocatedTxKernel> = client::get(url.as_str(), self.node_api_secret())
+			.map_err(|e| libwallet::ErrorKind::ClientCallback(format!("Kernel lookup: {}", e)))?;
+
+		Ok(res.map(|k| (k.tx_kernel, k.height, k.mmr_index)))
 	}
 }

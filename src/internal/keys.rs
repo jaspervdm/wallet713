@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use crate::wallet::error::ErrorKind;
-use crate::wallet::types::{AcctPathMapping, NodeClient, WalletBackend};
+use crate::wallet::types::{AcctPathMapping, WalletBackend};
 use failure::Error;
 use grin_keychain::{ChildNumber, Identifier, Keychain};
+use libwallet::NodeClient;
 
 /// Get next available key in the wallet for a given parent
 pub fn next_available_key<T: ?Sized, C, K>(wallet: &mut T) -> Result<Identifier, Error>

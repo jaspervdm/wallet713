@@ -2,9 +2,12 @@ use crate::cli_message;
 use crate::common::{Arc, Error, Keychain, Mutex};
 use crate::contacts::{Address, AddressType, GrinboxAddress};
 use crate::wallet::api::{Foreign, Owner};
-use crate::wallet::types::{NodeClient, Slate, TxProof, VersionedSlate, WalletBackend};
+use crate::wallet::types::{Slate, TxProof, VersionedSlate, WalletBackend};
 use crate::wallet::Container;
 use colored::Colorize;
+use grinswap::Message as SwapMessage;
+use libwallet::NodeClient;
+use serde::Serialize;
 use std::marker::Send;
 
 pub enum CloseReason {
@@ -13,7 +16,7 @@ pub enum CloseReason {
 }
 
 pub trait Publisher: Send {
-	fn post_slate(&self, slate: &VersionedSlate, to: &Address) -> Result<(), Error>;
+	fn post<T: Serialize>(&self, payload: &T, to: &dyn Address) -> Result<(), Error>;
 }
 
 pub trait Subscriber {
@@ -29,7 +32,8 @@ pub trait Subscriber {
 
 pub trait SubscriptionHandler: Send {
 	fn on_open(&self);
-	fn on_slate(&self, from: &Address, slate: &VersionedSlate, proof: Option<&mut TxProof>);
+	fn on_slate(&self, from: &dyn Address, slate: &VersionedSlate, proof: Option<&mut TxProof>);
+	fn on_swap_message(&self, from: &dyn Address, message: SwapMessage);
 	fn on_close(&self, result: CloseReason);
 	fn on_dropped(&self);
 	fn on_reestablished(&self);
@@ -99,7 +103,7 @@ where
 		//        cli_message!("Listener for {} started", self.name.bright_green());
 	}
 
-	fn on_slate(&self, from: &Address, slate: &VersionedSlate, tx_proof: Option<&mut TxProof>) {
+	fn on_slate(&self, from: &dyn Address, slate: &VersionedSlate, tx_proof: Option<&mut TxProof>) {
 		let version = slate.version();
 		let mut slate: Slate = slate.clone().into();
 
@@ -130,18 +134,20 @@ where
 					let id = slate.id.clone();
 					let slate = VersionedSlate::into_version(slate, version);
 
-					self.publisher
-						.post_slate(&slate, from)
+					let _ = self
+						.publisher
+						.post(&slate, from)
 						.map_err(|e| {
 							cli_message!("{}: {}", "ERROR".bright_red(), e);
 							e
 						})
-						.expect("failed posting slate!");
-					cli_message!(
-						"Slate {} sent back to {} successfully",
-						id.to_string().bright_green(),
-						from.stripped().bright_green()
-					);
+						.map(|_| {
+							cli_message!(
+								"Slate {} sent back to {} successfully",
+								id.to_string().bright_green(),
+								from.stripped().bright_green()
+							);
+						});
 				}
 				/*else {
 					cli_message!(
@@ -156,6 +162,15 @@ where
 			Ok(()) => {}
 			Err(e) => cli_message!("{}", e),
 		}
+	}
+
+	fn on_swap_message(&self, from: &dyn Address, message: SwapMessage) {
+		let _ = self
+			.foreign
+			.receive_swap_message(Some(format!("{}", from)), message)
+			.map_err(|e| {
+				println!("{}: {}", "ERROR".bright_red(), e);
+			});
 	}
 
 	fn on_close(&self, reason: CloseReason) {
@@ -179,4 +194,11 @@ where
 			self.name.bright_green()
 		)
 	}
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EncryptedPayload {
+	Tx(VersionedSlate),
+	Swap(SwapMessage),
 }

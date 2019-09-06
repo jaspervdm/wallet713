@@ -1,4 +1,5 @@
 use blake2_rfc::blake2b::Blake2b;
+use byteorder::{BigEndian, ByteOrder};
 use chrono::Utc;
 use failure::ResultExt;
 use std::cell::RefCell;
@@ -13,19 +14,25 @@ use grin_store::Store;
 use grin_store::{self, option_to_not_found, to_key, to_key_u64};
 use grin_util::secp::constants::SECRET_KEY_SIZE;
 use grin_util::{from_hex, to_hex, ZeroingString};
+use grinswap::{Context as SwapContext, Swap};
+use libwallet::NodeClient;
+use uuid::Uuid;
 
 use super::types::{
-	AcctPathMapping, ChildNumber, Context, Identifier, NodeClient, OutputData, Result, Transaction,
-	TxLogEntry, TxProof, WalletBackend, WalletBackendBatch, WalletSeed,
+	AcctPathMapping, ChildNumber, Context, Identifier, OutputData, Result, Transaction, TxLogEntry,
+	TxProof, WalletBackend, WalletBackendBatch, WalletSeed,
 };
 use crate::common::config::WalletConfig;
 use crate::common::{ErrorKind, Keychain};
 use crate::internal::restore;
+use crate::wallet::swap::{SwapIdentifier, SwapOffer, SwapSummary};
 
 pub const DB_DIR: &'static str = "db";
 pub const TX_SAVE_DIR: &'static str = "saved_txs";
 pub const TX_PROOF_SAVE_DIR: &'static str = "saved_proofs";
+pub const SWAP_DIR: &'static str = "swaps";
 
+// Taken: abcdijmopst
 const OUTPUT_PREFIX: u8 = 'o' as u8;
 const DERIV_PREFIX: u8 = 'd' as u8;
 const CONFIRMED_HEIGHT_PREFIX: u8 = 'c' as u8;
@@ -33,6 +40,10 @@ const PRIVATE_TX_CONTEXT_PREFIX: u8 = 'p' as u8;
 const TX_LOG_ENTRY_PREFIX: u8 = 't' as u8;
 const TX_LOG_ID_PREFIX: u8 = 'i' as u8;
 const ACCOUNT_PATH_MAPPING_PREFIX: u8 = 'a' as u8;
+const SWAP_IDX_PREFIX: u8 = 'j' as u8;
+const SWAP_MAPPING_PREFIX: u8 = 'm' as u8;
+const SWAP_CONTEXT_PREFIX: u8 = 'b' as u8;
+const SWAP_SUMMARY_PREFIX: u8 = 's' as u8;
 
 fn private_ctx_xor_keys<K>(
 	keychain: &K,
@@ -175,6 +186,12 @@ where
 		let stored_tx_proof_path = root_path.join(TX_PROOF_SAVE_DIR);
 		fs::create_dir_all(&stored_tx_proof_path)?;
 
+		let stored_swap_path = root_path.join(SWAP_DIR);
+		fs::create_dir_all(&stored_swap_path)?;
+
+		let stored_swap_offer_path = root_path.join(SWAP_DIR).join("offers");
+		fs::create_dir_all(&stored_swap_offer_path)?;
+
 		let store = Store::new(db_path.to_str().unwrap(), None, Some(DB_DIR), None)?;
 
 		let default_account = AcctPathMapping {
@@ -232,6 +249,10 @@ where
 		let proofs_path = root_path.join(TX_PROOF_SAVE_DIR);
 		if proofs_path.exists() {
 			fs::rename(&proofs_path, &backup_path.join(TX_PROOF_SAVE_DIR))?;
+		}
+		let swaps_path = root_path.join(SWAP_DIR);
+		if swaps_path.exists() {
+			fs::rename(&swaps_path, &backup_path.join(SWAP_DIR))?;
 		}
 
 		self.connect()?;
@@ -370,7 +391,8 @@ where
 		tx_f.read_to_string(&mut content)?;
 		let tx_bin = from_hex(content).unwrap();
 		Ok(Some(
-			ser::deserialize::<Transaction>(&mut &tx_bin[..]).unwrap(),
+			ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion::local())
+				.unwrap(),
 		))
 	}
 
@@ -460,6 +482,97 @@ where
 			)))
 		}
 	}
+
+	fn convert_swap_id(&self, identifier: SwapIdentifier) -> Result<Uuid> {
+		let id = match identifier {
+			SwapIdentifier::Id(i) => i,
+			SwapIdentifier::Idx(i) => self
+				.get_swap_id(i)?
+				.ok_or(ErrorKind::GenericError(format!("Swap {} not found", i)))?,
+		};
+
+		Ok(id)
+	}
+
+	fn get_swap_id(&self, idx: u32) -> Result<Option<Uuid>> {
+		let mut key = vec![0; 4];
+		BigEndian::write_u32(&mut key, idx);
+		let key = to_key(SWAP_MAPPING_PREFIX, &mut key);
+
+		let id = match self.db()?.get(&key)? {
+			Some(b) => Uuid::from_bytes(&b)?,
+			None => return Ok(None),
+		};
+
+		Ok(Some(id))
+	}
+
+	fn get_swap_offer(&self, id: Uuid) -> Result<Option<SwapOffer>> {
+		let path = Path::new(&self.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join("offers")
+			.join(format!("{}.json", id.to_string()));
+		if !path.exists() {
+			return Ok(None);
+		}
+		let mut file = File::open(path)?;
+		let mut content = String::new();
+		file.read_to_string(&mut content)?;
+		Ok(Some(serde_json::from_str(&content)?))
+	}
+
+	fn get_swap(&self, id: Uuid) -> Result<Option<Swap>> {
+		let path = Path::new(&self.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join(format!("{}.json", id.to_string()));
+		if !path.exists() {
+			return Ok(None);
+		}
+		let mut file = File::open(path)?;
+		let mut content = String::new();
+		file.read_to_string(&mut content)?;
+		Ok(Some(serde_json::from_str(&content)?))
+	}
+
+	fn get_swap_context(&self, id: Uuid) -> Result<SwapContext> {
+		let key = to_key(SWAP_CONTEXT_PREFIX, &mut id.as_bytes().to_vec());
+		let res = option_to_not_found(
+			self.db()?.get_ser(&key),
+			&format!("swap context {}", id.to_string()),
+		)?;
+		Ok(res)
+	}
+
+	fn swap_offers<'a>(&'a self) -> Result<Box<dyn Iterator<Item = SwapOffer> + 'a>> {
+		let path = Path::new(&self.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join("offers");
+		let read = fs::read_dir(path)?;
+
+		let it = read
+			.filter_map(|f| f.ok())
+			.filter_map(|f| match f.file_type() {
+				Ok(t) if t.is_file() => Some(f.path()),
+				_ => None,
+			})
+			.filter_map(|p| File::open(p).ok())
+			.filter_map(|mut f| {
+				let mut content = String::new();
+				f.read_to_string(&mut content).map(|_| content).ok()
+			})
+			.filter_map(|c| serde_json::from_str::<SwapOffer>(&c).ok());
+
+		Ok(Box::new(it))
+	}
+
+	fn swap_summaries<'a>(&'a self) -> Result<Box<dyn Iterator<Item = SwapSummary> + 'a>> {
+		Ok(Box::new(
+			self.db()?
+				.iter(&[SWAP_SUMMARY_PREFIX])
+				.unwrap()
+				.map(|x| x.1),
+		))
+	}
 }
 
 /// An atomic batch in which all changes can be committed all at once or
@@ -518,7 +631,7 @@ where
 			.join(filename);
 		let path_buf = Path::new(&path).to_path_buf();
 		let mut stored_tx = File::create(path_buf)?;
-		let tx_hex = to_hex(ser::ser_vec(tx).unwrap());;
+		let tx_hex = to_hex(ser::ser_vec(tx, ser::ProtocolVersion::local()).unwrap());;
 		stored_tx.write_all(&tx_hex.as_bytes())?;
 		stored_tx.sync_all()?;
 		Ok(())
@@ -645,6 +758,99 @@ where
 			.unwrap()
 			.delete(&ctx_key)
 			.map_err(|e| e.into())
+	}
+
+	fn next_swap_idx(&mut self) -> Result<u32> {
+		let key = to_key(SWAP_IDX_PREFIX, &mut Vec::new());
+		let idx = self
+			.db
+			.borrow()
+			.as_ref()
+			.unwrap()
+			.get_ser(&key)?
+			.unwrap_or(0);
+		self.db
+			.borrow()
+			.as_ref()
+			.unwrap()
+			.put_ser(&key, &(idx + 1))?;
+
+		Ok(idx)
+	}
+
+	fn store_swap_mapping(&mut self, idx: u32, id: Uuid) -> Result<()> {
+		let mut key = vec![0; 4];
+		BigEndian::write_u32(&mut key, idx);
+		let key = to_key(SWAP_MAPPING_PREFIX, &mut key);
+		self.db
+			.borrow()
+			.as_ref()
+			.unwrap()
+			.put(&key, id.as_bytes())?;
+
+		Ok(())
+	}
+
+	fn store_swap_offer(&mut self, offer: &SwapOffer) -> Result<()> {
+		let path = Path::new(&self._store.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join("offers")
+			.join(format!("{}.json", offer.id.to_string()));
+
+		if path.exists() {
+			return Err(ErrorKind::GenericError("Offer already exists".into()).into());
+		}
+
+		let mut file = File::create(path)?;
+		let ser = serde_json::to_string_pretty(offer)?;
+		file.write_all(&ser.as_bytes())?;
+		file.sync_all()?;
+
+		Ok(())
+	}
+
+	fn delete_swap_offer(&mut self, id: Uuid) -> Result<()> {
+		let path = Path::new(&self._store.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join("offers")
+			.join(format!("{}.json", id.to_string()));
+
+		if !path.exists() {
+			return Err(ErrorKind::FileNotFound.into());
+		}
+		fs::remove_file(path)?;
+
+		Ok(())
+	}
+
+	fn store_swap(&mut self, swap: &Swap) -> Result<()> {
+		let path = Path::new(&self._store.config.data_file_dir)
+			.join(SWAP_DIR)
+			.join(format!("{}.json", swap.id.to_string()));
+		let mut file = File::create(path)?;
+		let ser = serde_json::to_string_pretty(swap)?;
+		file.write_all(&ser.as_bytes())?;
+		file.sync_all()?;
+
+		let summary: SwapSummary = swap.into();
+		let key = to_key(SWAP_SUMMARY_PREFIX, &mut swap.id.as_bytes().to_vec());
+		self.db.borrow().as_ref().unwrap().put_ser(&key, &summary)?;
+
+		Ok(())
+	}
+
+	fn store_swap_context(&mut self, id: Uuid, context: &SwapContext) -> Result<()> {
+		let key = to_key(SWAP_CONTEXT_PREFIX, &mut id.as_bytes().to_vec());
+		self.db.borrow().as_ref().unwrap().put_ser(&key, context)?;
+
+		Ok(())
+	}
+
+	fn delete_swap_context(&mut self, id: Uuid) -> Result<()> {
+		let key = to_key(SWAP_CONTEXT_PREFIX, &mut id.as_bytes().to_vec());
+		self.db.borrow().as_ref().unwrap().delete(&key)?;
+
+		Ok(())
 	}
 
 	fn commit(&mut self) -> Result<()> {

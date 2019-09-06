@@ -11,6 +11,7 @@ use gotham::router::builder::*;
 use gotham::router::Router;
 use gotham::state::{FromState, State};
 use hyper::{Body, Chunk, HeaderMap, Method, Response, StatusCode, Uri, Version};
+use libwallet::NodeClient;
 use mime::Mime;
 use serde_json::{json, Value};
 use std::panic::RefUnwindSafe;
@@ -20,7 +21,7 @@ use crate::api::auth::BasicAuthMiddleware;
 use crate::api::error::ApiError;
 use crate::common::Keychain;
 use crate::wallet::api::{Foreign, Owner};
-use crate::wallet::types::{Arc, Mutex, NodeClient, WalletBackend};
+use crate::wallet::types::{Arc, Mutex, WalletBackend};
 use crate::wallet::Container;
 
 pub struct ForeignApiMiddleware<W, C, K>

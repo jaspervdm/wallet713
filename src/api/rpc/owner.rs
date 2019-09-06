@@ -17,11 +17,12 @@
 use crate::common::Keychain;
 use crate::wallet::api::Owner;
 use crate::wallet::types::{
-	AcctPathMapping, Identifier, InitTxArgs, NodeClient, NodeHeightResult, OutputCommitMapping,
-	Slate, Transaction, TxLogEntry, WalletBackend, WalletInfo,
+	AcctPathMapping, Identifier, InitTxArgs, NodeHeightResult, OutputCommitMapping, Slate,
+	Transaction, TxLogEntry, WalletBackend, WalletInfo,
 };
 use crate::wallet::ErrorKind;
 use easy_jsonrpc;
+use libwallet::NodeClient;
 use uuid::Uuid;
 
 /// Public definition used to generate Owner jsonrpc api.

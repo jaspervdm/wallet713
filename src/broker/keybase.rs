@@ -1,3 +1,4 @@
+use libwallet::NodeClient;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::borrow::Borrow;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use super::types::{CloseReason, Controller, Publisher, Subscriber, SubscriptionHandler};
 use crate::common::{Arc, ErrorKind, Keychain, Mutex, Result};
 use crate::contacts::{Address, KeybaseAddress};
-use crate::wallet::types::{NodeClient, VersionedSlate, WalletBackend};
+use crate::wallet::types::{VersionedSlate, WalletBackend};
 
 pub const TOPIC_SLATE_NEW: &str = "grin_slate_new";
 pub const TOPIC_WALLET713_SLATES: &str = "wallet713_grin_slate";
@@ -42,7 +43,7 @@ impl KeybaseSubscriber {
 }
 
 impl Publisher for KeybasePublisher {
-	fn post_slate(&self, slate: &VersionedSlate, to: &Address) -> Result<()> {
+	fn post<T: Serialize>(&self, payload: &T, to: &dyn Address) -> Result<()> {
 		let keybase_address = KeybaseAddress::from_str(&to.to_string())?;
 
 		// make sure we don't send message with ttl to wallet713 as keybase oneshot does not support exploding lifetimes
@@ -56,7 +57,7 @@ impl Publisher for KeybasePublisher {
 			None => TOPIC_WALLET713_SLATES,
 		};
 
-		KeybaseBroker::send(&slate, &to.stripped(), topic, ttl)?;
+		KeybaseBroker::send(payload, &to.stripped(), topic, ttl)?;
 
 		Ok(())
 	}

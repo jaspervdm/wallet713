@@ -1,5 +1,5 @@
 use super::args::{
-	self, AccountArgs, AddressArgs, ContactArgs, ProofArgs, SeedArgs, SendCommandType,
+	self, AccountArgs, AddressArgs, ContactArgs, ProofArgs, SeedArgs, SendCommandType, SwapArgs,
 };
 use super::display::{self, InitialPromptOption};
 use crate::api::listener::ListenerInterface;
@@ -7,12 +7,15 @@ use crate::common::motd::get_motd;
 use crate::common::{Arc, ErrorKind, Keychain, Mutex};
 use crate::contacts::Address;
 use crate::wallet::api::{Foreign, Owner};
-use crate::wallet::types::{NodeClient, TxProof, VersionedSlate, WalletBackend};
+use crate::wallet::swap::{SwapIdentifier, SwapSummary};
+use crate::wallet::types::{TxProof, VersionedSlate, WalletBackend};
 use crate::wallet::Container;
 use clap::{App, ArgMatches};
 use colored::Colorize;
 use failure::Error;
 use grin_core::core::amount_to_hr_string;
+use grinswap::Currency;
+use libwallet::NodeClient;
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
@@ -483,6 +486,48 @@ where
 					}
 				};
 				self.api.stop_listener(interface)?;
+			}
+			("swap", Some(m)) => match args::swap_command(m)? {
+				SwapArgs::Sell(address, redeem) => {
+					let (id, _, action) = self.api.create_swap_offer(
+						Some(address.into()),
+						10_000_000_000,
+						1_000_000,
+						Currency::Btc,
+						redeem.into(),
+					)?;
+
+					cli_message!(
+						"Created swap offer {} to sell 10 Grin for 0.01 BTC",
+						id.to_string().bright_green()
+					);
+					cli_message!("Action: {:?}", action);
+				}
+				SwapArgs::Buy(idx) => {
+					let (id, p, s, c, a) = self.api.accept_swap_offer(SwapIdentifier::Idx(idx))?;
+					cli_message!(
+						"Accepted swap offer {} to buy {} Grin for {} {}",
+						id.to_string().bright_green(),
+						p,
+						s,
+						c
+					);
+					cli_message!("Action: {:?}", a);
+				}
+				SwapArgs::Info(idx) => {
+					let ident = SwapIdentifier::Idx(idx);
+					let (swap, action) = self.api.retrieve_swap(ident, true)?;
+
+					println!("Summary: {:#?}", SwapSummary::from(&swap));
+					println!("Action: {:?}", action);
+				}
+			},
+			("swaps", _) => {
+				println!("Swaps:");
+				println!("{:#?}", self.api.retrieve_swaps()?);
+
+				println!("Offers:");
+				println!("{:#?}", self.api.retrieve_swap_offers()?);
 			}
 			("txs", _) => {
 				let account = self.api.active_account()?;

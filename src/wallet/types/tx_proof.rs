@@ -2,8 +2,8 @@ use failure::Fail;
 use grin_util::secp::key::SecretKey;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::Signature;
+use serde::de::DeserializeOwned;
 
-use super::VersionedSlate;
 use crate::common::crypto::verify_signature;
 use crate::common::crypto::Hex;
 use crate::common::message::EncryptedMessage;
@@ -27,8 +27,8 @@ pub enum ErrorKind {
 	DecryptionKey,
 	#[fail(display = "Unable to decrypt message")]
 	DecryptMessage,
-	#[fail(display = "Unable to parse slate")]
-	ParseSlate,
+	#[fail(display = "Unable to parse message")]
+	ParseMessage,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,10 +45,10 @@ pub struct TxProof {
 }
 
 impl TxProof {
-	pub fn verify_extract(
+	pub fn verify_extract<T: DeserializeOwned>(
 		&self,
 		expected_destination: Option<&GrinboxAddress>,
-	) -> Result<(GrinboxAddress, VersionedSlate), ErrorKind> {
+	) -> Result<(GrinboxAddress, T), ErrorKind> {
 		let mut challenge = String::new();
 		challenge.push_str(self.message.as_str());
 		challenge.push_str(self.challenge.as_str());
@@ -75,20 +75,20 @@ impl TxProof {
 			.decrypt_with_key(&self.key)
 			.map_err(|_| ErrorKind::DecryptMessage)?;
 
-		let slate: VersionedSlate =
-			serde_json::from_str(&decrypted_message).map_err(|_| ErrorKind::ParseSlate)?;
+		let slate =
+			serde_json::from_str(&decrypted_message).map_err(|_| ErrorKind::ParseMessage)?;
 
 		Ok((destination, slate))
 	}
 
-	pub fn from_response(
+	pub fn from_response<T: DeserializeOwned>(
 		from: String,
 		message: String,
 		challenge: String,
 		signature: String,
 		secret_key: &SecretKey,
 		expected_destination: Option<&GrinboxAddress>,
-	) -> Result<(VersionedSlate, TxProof), ErrorKind> {
+	) -> Result<(T, TxProof), ErrorKind> {
 		let address =
 			GrinboxAddress::from_str(from.as_str()).map_err(|_| ErrorKind::ParseAddress)?;
 		let signature =

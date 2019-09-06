@@ -1,8 +1,12 @@
 use super::{
-	AcctPathMapping, Context, Identifier, Keychain, NodeClient, OutputData, Result, Transaction,
-	TxLogEntry, TxProof, WalletBackendBatch,
+	AcctPathMapping, Context, Identifier, Keychain, OutputData, Result, Transaction, TxLogEntry,
+	TxProof, WalletBackendBatch,
 };
+use crate::wallet::swap::{SwapIdentifier, SwapOffer, SwapSummary};
 use grin_util::ZeroingString;
+use grinswap::{Context as SwapContext, Swap};
+use libwallet::NodeClient;
+use uuid::Uuid;
 
 pub trait WalletBackend<C, K>: Send + 'static
 where
@@ -56,4 +60,11 @@ where
 	fn tx_logs<'a>(&'a self) -> Result<Box<dyn Iterator<Item = TxLogEntry> + 'a>>;
 	fn accounts<'a>(&'a self) -> Result<Box<dyn Iterator<Item = AcctPathMapping> + 'a>>;
 	fn batch<'a>(&'a self) -> Result<Box<dyn WalletBackendBatch<K> + 'a>>;
+	fn convert_swap_id(&self, identifier: SwapIdentifier) -> Result<Uuid>;
+	fn get_swap_id(&self, idx: u32) -> Result<Option<Uuid>>;
+	fn get_swap_offer(&self, id: Uuid) -> Result<Option<SwapOffer>>;
+	fn get_swap(&self, id: Uuid) -> Result<Option<Swap>>;
+	fn get_swap_context(&self, id: Uuid) -> Result<SwapContext>;
+	fn swap_offers<'a>(&'a self) -> Result<Box<dyn Iterator<Item = SwapOffer> + 'a>>;
+	fn swap_summaries<'a>(&'a self) -> Result<Box<dyn Iterator<Item = SwapSummary> + 'a>>;
 }

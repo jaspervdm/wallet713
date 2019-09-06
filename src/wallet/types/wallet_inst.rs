@@ -1,4 +1,5 @@
-use super::{Keychain, NodeClient, WalletBackend};
+use super::{Keychain, WalletBackend};
+use libwallet::NodeClient;
 
 pub trait WalletInst<C, K>: WalletBackend<C, K> + Send + Sync + 'static
 where

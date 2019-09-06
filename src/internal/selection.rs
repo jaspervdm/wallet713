@@ -16,7 +16,7 @@
 
 use super::keys;
 use crate::wallet::types::{
-	Context, NodeClient, OutputData, OutputStatus, Slate, TxLogEntry, TxLogEntryType, WalletBackend,
+	Context, OutputData, OutputStatus, Slate, TxLogEntry, TxLogEntryType, WalletBackend,
 };
 use crate::wallet::ErrorKind;
 use failure::Error;
@@ -25,6 +25,7 @@ use grin_core::libtx::build;
 use grin_core::libtx::proof::{ProofBuild, ProofBuilder};
 use grin_core::libtx::tx_fee;
 use grin_keychain::{Identifier, Keychain};
+use libwallet::NodeClient;
 use std::collections::HashMap;
 
 /// Initialize a transaction on the sender side, returns a corresponding

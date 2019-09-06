@@ -228,7 +228,10 @@ pub enum ErrorKind {
 	#[fail(display = "Unable to verify proof")]
 	VerifyProof,
 
+	#[fail(display = "Not found")]
+	NotFound,
+
 	/// Other
-	#[fail(display = "Generic error: {}", _0)]
+	#[fail(display = "{}", _0)]
 	GenericError(String),
 }

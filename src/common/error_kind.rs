@@ -72,4 +72,6 @@ pub enum ErrorKind {
 	ParseSlate,
 	#[fail(display = "Incorrect listener interface")]
 	IncorrectListenerInterface,
+	#[fail(display = "File not found")]
+	FileNotFound,
 }

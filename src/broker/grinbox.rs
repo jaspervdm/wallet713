@@ -3,8 +3,10 @@ use crate::common::crypto::{sign_challenge, Hex, SecretKey};
 use crate::common::message::EncryptedMessage;
 use crate::common::{Arc, ErrorKind, Keychain, Mutex, Result};
 use crate::contacts::{Address, GrinboxAddress, DEFAULT_GRINBOX_PORT};
-use crate::wallet::types::{NodeClient, TxProof, VersionedSlate, WalletBackend};
+use crate::wallet::types::{TxProof, WalletBackend};
 use colored::Colorize;
+use libwallet::NodeClient;
+use serde::Serialize;
 use ws::util::Token;
 use ws::{
 	connect, CloseCode, Error as WsError, ErrorKind as WsErrorKind, Handler, Handshake, Message,
@@ -12,7 +14,9 @@ use ws::{
 };
 
 use super::protocol::{ProtocolRequest, ProtocolResponse};
-use super::types::{CloseReason, Controller, Publisher, Subscriber, SubscriptionHandler};
+use super::types::{
+	CloseReason, Controller, EncryptedPayload, Publisher, Subscriber, SubscriptionHandler,
+};
 
 const KEEPALIVE_TOKEN: Token = Token(1);
 const KEEPALIVE_INTERVAL_MS: u64 = 30_000;
@@ -39,10 +43,10 @@ impl GrinboxPublisher {
 }
 
 impl Publisher for GrinboxPublisher {
-	fn post_slate(&self, slate: &VersionedSlate, to: &Address) -> Result<()> {
+	fn post<T: Serialize>(&self, payload: &T, to: &dyn Address) -> Result<()> {
 		let to = GrinboxAddress::from_str(&to.to_string())?;
 		self.broker
-			.post_slate(slate, &to, &self.address, &self.secret_key)?;
+			.post(payload, &to, &self.address, &self.secret_key)?;
 		Ok(())
 	}
 }
@@ -114,9 +118,9 @@ impl GrinboxBroker {
 		})
 	}
 
-	fn post_slate(
+	fn post<T: Serialize>(
 		&self,
-		slate: &VersionedSlate,
+		payload: &T,
 		to: &GrinboxAddress,
 		from: &GrinboxAddress,
 		secret_key: &SecretKey,
@@ -127,8 +131,10 @@ impl GrinboxBroker {
 
 		let pkey = to.public_key()?;
 		let skey = secret_key.clone();
-		let message = EncryptedMessage::new(serde_json::to_string(&slate)?, &to, &pkey, &skey)
-			.map_err(|_| WsError::new(WsErrorKind::Protocol, "could not encrypt slate!"))?;
+		let message = EncryptedMessage::new(serde_json::to_string(&payload)?, &to, &pkey, &skey)
+			.map_err(|_| {
+				WsError::new(WsErrorKind::Protocol, "could not encrypt grinbox message")
+			})?;
 		let message_ser = serde_json::to_string(&message)?;
 
 		let mut challenge = String::new();
@@ -145,9 +151,15 @@ impl GrinboxBroker {
 		if let Some(ref sender) = *self.inner.lock() {
 			sender
 				.send(serde_json::to_string(&request).unwrap())
-				.map_err(|_| ErrorKind::GenericError("failed posting slate!".to_string()).into())
+				.map_err(|_| {
+					ErrorKind::GenericError("failed sending message to grinbox relay".to_string())
+						.into()
+				})
 		} else {
-			Err(ErrorKind::GenericError("failed posting slate!".to_string()).into())
+			Err(
+				ErrorKind::GenericError("failed sending message to grinbox relay".to_string())
+					.into(),
+			)
 		}
 	}
 
@@ -344,9 +356,9 @@ where
 				challenge,
 				signature,
 			} => {
-				let (slate, mut tx_proof) = match TxProof::from_response(
-					from,
-					str,
+				let (payload, mut tx_proof) = match TxProof::from_response::<EncryptedPayload>(
+					from.clone(),
+					str.clone(),
 					challenge,
 					signature,
 					&self.secret_key,
@@ -360,9 +372,16 @@ where
 				};
 
 				let address = tx_proof.address.clone();
-				self.handler
-					.lock()
-					.on_slate(&address, &slate, Some(&mut tx_proof));
+				match payload {
+					EncryptedPayload::Tx(slate) => {
+						self.handler
+							.lock()
+							.on_slate(&address, &slate, Some(&mut tx_proof));
+					}
+					EncryptedPayload::Swap(message) => {
+						self.handler.lock().on_swap_message(&address, message);
+					}
+				}
 			}
 			ProtocolResponse::Error {
 				kind: _,

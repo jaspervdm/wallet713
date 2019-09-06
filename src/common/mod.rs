@@ -18,7 +18,7 @@ use std::result::Result as StdResult;
 pub use std::sync::Arc;
 
 pub type Result<T> = StdResult<T, Error>;
-pub trait Keychain: grin_keychain::Keychain + Clone + 'static {}
+pub trait Keychain: grinswap::Keychain {}
 impl Keychain for grin_keychain::ExtKeychain {}
 
 #[derive(Clone, PartialEq)]

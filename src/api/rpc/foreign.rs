@@ -17,9 +17,10 @@
 use crate::common::Keychain;
 use crate::wallet::api::types::VersionInfo;
 use crate::wallet::api::Foreign;
-use crate::wallet::types::{BlockFees, CbData, NodeClient, Slate, VersionedSlate, WalletBackend};
+use crate::wallet::types::{BlockFees, CbData, Slate, VersionedSlate, WalletBackend};
 use crate::wallet::ErrorKind;
 use easy_jsonrpc;
+use libwallet::NodeClient;
 
 /// Public definition used to generate Foreign jsonrpc api.
 /// * When running with defaults, the V2 api is available at

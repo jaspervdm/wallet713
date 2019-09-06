@@ -1,10 +1,12 @@
 use super::Adapter;
 use crate::api::listener::ListenerInterface;
 use crate::common::{Arc, Keychain, Mutex};
-use crate::wallet::types::{NodeClient, VersionedSlate, WalletBackend};
+use crate::wallet::types::{VersionedSlate, WalletBackend};
 use crate::wallet::Container;
-/// Keybase 'plugin' implementation
 use failure::Error;
+use libwallet::NodeClient;
+
+/// Keybase 'plugin' implementation
 
 #[derive(Clone)]
 pub struct KeybaseAdapter<'a, W, C, K>
@@ -45,6 +47,6 @@ where
 	fn send_tx_async(&self, dest: &str, slate: &VersionedSlate) -> Result<(), Error> {
 		let c = self.container.lock();
 		c.listener(ListenerInterface::Keybase)?
-			.publish(slate, &dest.to_owned())
+			.publish_slate(slate, &dest.to_owned())
 	}
 }

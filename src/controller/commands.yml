@@ -228,5 +228,37 @@ subcommands:
         - owner:
             help: Run owner listener (only applicable for http)
             short: o
+  - swap:
+      about: TODO
+      subcommands:
+        - sell:
+            about: TODO
+            args:
+              - address:
+                  help: The address to sell to
+                  short: t
+                  long: to
+                  takes_value: true
+              - redeem:
+                  help: The address on the other chain to recieve your funds
+                  short: r
+                  long: redeem
+                  takes_value: true
+        - buy:
+            about: TODO
+            args:
+              - idx:
+                  help: TODO
+                  index: 1
+                  required: true
+        - info:
+            about: TODO
+            args:
+              - idx:
+                  help: TODO
+                  index: 1
+                  required: true
+  - swaps:
+      about: TODO
   - txs:
       about: Display the transaction log

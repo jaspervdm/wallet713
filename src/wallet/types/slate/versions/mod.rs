@@ -1,6 +1,6 @@
 pub mod v2;
 
-use super::Slate;
+use super::{CompatKernelFeatures, Slate};
 use crate::wallet::error::ErrorKind;
 use std::convert::TryFrom;
 use v2::SlateV2;

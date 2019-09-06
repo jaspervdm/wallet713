@@ -16,8 +16,7 @@
 use super::{keys, updater};
 use crate::common::ErrorKind;
 use crate::wallet::types::{
-	NodeClient, OutputCommitMapping, OutputData, OutputStatus, TxLogEntry, TxLogEntryType,
-	WalletBackend,
+	OutputCommitMapping, OutputData, OutputStatus, TxLogEntry, TxLogEntryType, WalletBackend,
 };
 use failure::Error;
 use grin_core::consensus::{valid_header_version, WEEK_HEIGHT};
@@ -26,6 +25,7 @@ use grin_core::global::coinbase_maturity;
 use grin_core::libtx::proof;
 use grin_keychain::{Identifier, Keychain, SwitchCommitmentType};
 use grin_util::secp::pedersen::{Commitment, RangeProof};
+use libwallet::NodeClient;
 use std::collections::HashMap;
 use std::time::Instant;
 

@@ -1,10 +1,11 @@
+use grin_core::global::ChainTypes;
+use grin_util::LoggingConfig;
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-use grin_core::global::ChainTypes;
-use grin_util::LoggingConfig;
+use toml::value::Table;
 
 use super::is_cli;
 use super::Result;
@@ -41,6 +42,7 @@ pub struct Wallet713Config {
 	pub foreign_api_address: Option<String>,
 	pub foreign_api_secret: Option<String>,
 	pub check_updates: Option<bool>,
+	pub swap: Option<SwapConfig>,
 	#[serde(skip)]
 	pub config_home: Option<String>,
 }
@@ -295,4 +297,9 @@ pub struct GlobalWalletConfigMembers {
 	pub wallet: WalletConfig,
 	/// Logging config
 	pub logging: Option<LoggingConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SwapConfig {
+	pub currencies: HashMap<String, Table>,
 }

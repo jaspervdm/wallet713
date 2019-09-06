@@ -14,14 +14,15 @@
 
 use super::{check_middleware, VersionInfo};
 use crate::common::{Arc, Keychain, Mutex, MutexGuard};
-use crate::internal::{tx, updater};
-use crate::wallet::types::{
-	BlockFees, CbData, NodeClient, NodeVersionInfo, Slate, SlateVersion, WalletBackend,
-};
-use crate::wallet::Container;
+use crate::internal::{swap, tx, updater};
+use crate::wallet::swap::SwapOffer;
+use crate::wallet::types::{BlockFees, CbData, Slate, SlateVersion, WalletBackend};
+use crate::wallet::{Container, ErrorKind};
 use colored::Colorize;
 use failure::Error;
 use grin_core::core::amount_to_hr_string;
+use grinswap::{Message as SwapMessage, SwapApi, Update as SwapUpdate};
+use libwallet::{NodeClient, NodeVersionInfo};
 use std::marker::PhantomData;
 
 const FOREIGN_API_VERSION: u16 = 2;
@@ -69,28 +70,6 @@ where
 			phantom_k: PhantomData,
 			phantom_c: PhantomData,
 		}
-	}
-
-	/// Convenience function that opens and closes the wallet with the stored credentials
-	fn open_and_close<F, X>(&self, f: F) -> Result<X, Error>
-	where
-		F: FnOnce(&mut MutexGuard<Container<W, C, K>>) -> Result<X, Error>,
-	{
-		let mut c = self.container.lock();
-		{
-			let w = c.backend()?;
-			w.open_with_credentials()?;
-		}
-		let res = f(&mut c);
-		{
-			// Always try to close wallet
-			// Operation still considered successful, even if closing failed
-			let w = c.backend();
-			if w.is_ok() {
-				let _ = w.unwrap().close();
-			}
-		}
-		res
 	}
 
 	pub fn check_version(&self) -> Result<VersionInfo, Error> {
@@ -190,6 +169,124 @@ where
 		w.close()?;
 		res
 	}*/
+
+	pub fn receive_swap_message(
+		&self,
+		address: Option<String>,
+		message: SwapMessage,
+	) -> Result<(), Error> {
+		let from = match &address {
+			Some(a) => format!(" from {}", a.bright_green()),
+			None => String::new(),
+		};
+
+		self.swap_open_and_close(|c| {
+			match &message.inner {
+				SwapUpdate::Offer(_) => {
+					let w = c.backend()?;
+					if w.get_swap(message.id)?.is_some() || w.get_swap_offer(message.id)?.is_some()
+					{
+						return Err(ErrorKind::GenericError("Swap already exists".into()).into());
+					}
+
+					let (id, offer, secondary) = message.unwrap_offer()?;
+					let mut batch = w.batch()?;
+					let idx = batch.next_swap_idx()?;
+					let offer = SwapOffer {
+						id,
+						idx,
+						address,
+						offer,
+						secondary,
+					};
+					batch.store_swap_mapping(idx, id)?;
+					batch.store_swap_offer(&offer)?;
+					batch.commit()?;
+
+					cli_message!(
+						"Swap offer {} received{}",
+						id.to_string().bright_green(),
+						from
+					);
+				}
+				_ => {
+					let id = message.id;
+					let w = c.backend()?;
+					let context = w.get_swap_context(id)?;
+					let mut swap = w.get_swap(id)?.ok_or(ErrorKind::NotFound)?;
+
+					swap::update_swap(c, &mut swap, &context)?;
+					c.swap_apis.receive_message(&mut swap, &context, message)?;
+					swap::update_swap(c, &mut swap, &context)?;
+
+					let mut batch = c.backend()?.batch()?;
+					batch.store_swap(&swap)?;
+					batch.commit()?;
+
+					cli_message!(
+						"Swap {} message received{}",
+						id.to_string().bright_green(),
+						from
+					);
+				}
+			}
+
+			Ok(())
+		})
+	}
+
+	/// Convenience function that opens and closes the wallet with the stored credentials
+	fn open_and_close<F, X>(&self, f: F) -> Result<X, Error>
+	where
+		F: FnOnce(&mut MutexGuard<Container<W, C, K>>) -> Result<X, Error>,
+	{
+		let mut c = self.container.lock();
+		let w = c.backend()?;
+		if !w.has_seed()? {
+			return Err(ErrorKind::NoSeed.into());
+		}
+		w.open_with_credentials()?;
+
+		// Execute operation
+		let res = f(&mut c);
+
+		// Always try to close wallet
+		// Operation still considered successful, even if closing failed
+		let w = c.backend();
+		if w.is_ok() {
+			let _ = w.unwrap().close();
+		}
+
+		res
+	}
+
+	/// Convenience function that opens and closes the wallet with the stored credentials
+	fn swap_open_and_close<F, X>(&self, f: F) -> Result<X, Error>
+	where
+		F: FnOnce(&mut MutexGuard<Container<W, C, K>>) -> Result<X, Error>,
+	{
+		let mut c = self.container.lock();
+		let w = c.backend()?;
+		if !w.has_seed()? {
+			return Err(ErrorKind::NoSeed.into());
+		}
+		w.open_with_credentials()?;
+		let keychain = w.keychain().clone();
+		c.swap_apis.set_keychain(Some(keychain));
+
+		// Execute operation
+		let res = f(&mut c);
+
+		// Always try to close wallet
+		// Operation still considered successful, even if closing failed
+		let w = c.backend();
+		if w.is_ok() {
+			let _ = w.unwrap().close();
+		}
+		c.swap_apis.set_keychain(None);
+
+		res
+	}
 }
 
 impl<W, C, K> Clone for Foreign<W, C, K>
